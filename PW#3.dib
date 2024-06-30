@@ -32,12 +32,11 @@
 
 #!csharp
 
-using System;
-using System.Threading;
-
 //
 // Вычисление определенного интеграла
 //
+using System.Threading;
+using System.Threading.Tasks;
 class DefiniteIntegral
 {
     //
@@ -46,50 +45,32 @@ class DefiniteIntegral
     // step - размер одного шага разбиения
     // threadsNumber - число потоков, которые используются для вычислений
     //
-    public static double Solve(double a, double b, Func<double, double> function, double step, int threadsNumber)
+    public static double Solve(double a, double b, Func<double, double> function, double step, int threadsnumber)
     {
-        double totalResult = 0.0;
-        double start = a + step;
-        double end = b - step;
-                
-        Barrier barrier = new Barrier(threadsNumber + 1);
+        double result = 0.0;
+        result += (function.Invoke(a) + function.Invoke(b)) / 2;
+        Task[] tasks = new Task[threadsnumber];
 
-        double segmentLength = (end - start) / threadsNumber;
+        double interval = (b - a) / threadsnumber;
+        for (int th = 0; th < threadsnumber; th++) {
+            int k = th;
+            tasks[k] = Task.Factory.StartNew(() => {
+                double subResult = 0.0;
 
-        object lockObj = new object();
+                double start = a + interval * k;
+                double end = a + interval * (k + 1);
+                int steps = (int) Math.Round((end - start) / step);
 
-        totalResult += (function(a) + function(b)) / 2 * step;
+                for (int i = k == 0 ? 1 : 0; i < (k == threadsnumber - 1 ? steps + 1 : steps); i++) {
+                    subResult += function.Invoke(start + i * step);
+                }
 
-        void CalculateSegment(int segmentIndex)
-        {
-            double localResult = 0.0;
-            double segmentStart = start + segmentIndex * segmentLength;
-            double segmentEnd = segmentStart + segmentLength;
-
-            for (double x = segmentStart; x < segmentEnd; x += step)
-            {
-                localResult += function(x) * step;
-            }
-
-            lock (lockObj)
-            {
-                totalResult += localResult;
-            }
-
-            barrier.SignalAndWait();
+                result += subResult;
+            });
         }
 
-        Thread[] threads = new Thread[threadsNumber];
-        for (int i = 0; i < threadsNumber; i++)
-        {
-            int segmentIndex = i;
-            threads[i] = new Thread(() => CalculateSegment(segmentIndex));
-            threads[i].Start();
-        }
-
-        barrier.SignalAndWait();
-
-        return totalResult;
+        Task.WaitAll(tasks);
+        return result * step;
     }
 }
 
@@ -103,7 +84,136 @@ var X = (double x) => x;
 var SIN = (double x) => Math.Sin(x);
 
 Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, X, 1e-4, 2), 1e-4);
-
 Assert.Equal(0, DefiniteIntegral.Solve(-1, 1, SIN, 1e-5, 8), 1e-4);
-
 Assert.Equal(50, DefiniteIntegral.Solve(0, 10, X, 1e-6, 8), 1e-5);
+
+#!csharp
+
+//
+// Вычисление определенного интеграла
+// Реализация однопоточного вычисления интеграла
+//
+class DefiniteIntegralOneThread
+{
+    //
+    // a, b - границы отрезка, на котором происходит вычисление опредленного интеграла
+    // function - функция, для которой вычисляется определнный интеграл
+    // step - размер одного шага разбиения
+    // threadsNumber - число потоков, которые используются для вычислений
+    //
+    public static double Solve(double a, double b, Func<double, double> function, double step)
+    {
+        double result = 0.0;
+        result += (function.Invoke(a) + function.Invoke(b)) / 2;
+
+        int steps = (int) Math.Round((b - a) / step);
+        for (int i = 1; i < steps; i++) {
+            result += function.Invoke(a + i * step);
+        }   
+
+        return result * step;
+    }
+}
+
+#!markdown
+
+[Погрешность метода трапеций зависит от производной второго порядка](https://ru.wikipedia.org/wiki/%D0%9C%D0%B5%D1%82%D0%BE%D0%B4_%D1%82%D1%80%D0%B0%D0%BF%D0%B5%D1%86%D0%B8%D0%B9):
+$E_n(f) = -\frac{f''(\xi)}{12}(b - a)h^2$, где $h = (b - a) / n$ - шаг сетки
+
+
+Подставляя наши данные в формулу (берем максимальное значение функции $f''(\xi)$ - это 1), мы получаем погрешность $E_n(f) = 16.666h^2$ 
+
+
+Минимальный размер шага, обеспечивающий оптимальную производительность с точностью 1e-4 - это 1e-4
+
+#!csharp
+
+#r "nuget:ScottPlot, 5.0.36"
+using System.Diagnostics;
+using Microsoft.DotNet.Interactive.Formatting;
+
+public static string NumWord(int value, string[] words) {
+    value = Math.Abs(value) % 100;
+    int num = value % 10;
+    if (value > 10 && value < 20) return words[2];
+    if (num > 1 && num < 5) return words[1];
+    if (num == 1) return words[0];
+    return words[2];
+}
+
+// Register ScottPlot for interactive HTML rendering
+Formatter.Register(
+    typeof(ScottPlot.Plot), 
+    (p, w) => w.Write(((ScottPlot.Plot)p).GetImageHtml(400, 300)), 
+    HtmlFormatter.MimeType
+);
+
+int maxThreadCount = 50;
+int callCount = 10;
+
+int[] elapsedMillisecondsForThreads = new int[maxThreadCount];
+int[] threadCounts = new int[maxThreadCount];
+
+for (int currentThreadCount = 1; currentThreadCount < maxThreadCount; currentThreadCount++) {
+    threadCounts[currentThreadCount] = currentThreadCount;
+
+    Stopwatch stopwatch = new Stopwatch();
+
+    for (int currentCall = 0; currentCall < callCount; currentCall++) 
+    {
+        stopwatch.Start();
+
+        if (currentThreadCount == 1) 
+        {
+            DefiniteIntegralOneThread.Solve(-100, 100, SIN, 1e-4);
+        }
+        else 
+        {
+            DefiniteIntegral.Solve(-100, 100, SIN, 1e-4, currentThreadCount + 1);
+        }
+
+        stopwatch.Stop();
+    }
+
+    elapsedMillisecondsForThreads[currentThreadCount - 1] = (int)stopwatch.ElapsedMilliseconds;
+}
+
+ScottPlot.Plot plot = new();
+plot.Add.Scatter(
+    elapsedMillisecondsForThreads.Select(m => m / callCount).ToArray(), 
+    threadCounts
+);
+
+plot.XLabel("Время вычисления");
+plot.YLabel("Количество потоков");
+
+int best = elapsedMillisecondsForThreads.Min();
+int optimalThreadCount = 0;
+for (int i = 1; i < maxThreadCount; i++) {
+    if (elapsedMillisecondsForThreads[i] == best) { 
+        optimalThreadCount = i;
+        break;
+    }   
+}
+
+string[] wordForms = {"поток", "потока", "потоков"};
+
+for (int i = 0; i < maxThreadCount; i++) {
+    string declension = NumWord(i + 1, wordForms);
+    Console.WriteLine($"{i + 1} {declension} - {elapsedMillisecondsForThreads[i] / callCount}ms - {Math.Round((double)elapsedMillisecondsForThreads[i] / elapsedMillisecondsForThreads[0] * 100, 2)}%");
+}
+
+Console.WriteLine();
+Console.WriteLine($"1 поток - {elapsedMillisecondsForThreads[0] / callCount}ms - 100%");
+
+string declension = NumWord(optimalThreadCount + 1, wordForms);
+Console.WriteLine($"{optimalThreadCount + 1} {declension} - {elapsedMillisecondsForThreads[optimalThreadCount - 1] / callCount}ms - {Math.Round((double)elapsedMillisecondsForThreads[optimalThreadCount - 1] / elapsedMillisecondsForThreads[0] * 100, 2)}%");
+
+plot
+
+#!markdown
+
+## Summary
+Размер шага - 1e-4
+
+Оптимальное количество потоков - 10, скорость в среднем составляет 20% от однопоточного решения (один поток - 29ms, 10 потоков - 6ms), после него прирост к скорости очень мал
