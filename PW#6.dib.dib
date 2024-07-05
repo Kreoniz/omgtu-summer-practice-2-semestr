@@ -43,4 +43,166 @@
 
 #!markdown
 
+#!csharp
+
+#r "nuget:ScottPlot, 5.0.36"
+
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using ScottPlot;
+
+static double TestBlockingCollection(int itemCount)
+{
+    var collection = new BlockingCollection<int>(itemCount);
+    var readyToStart = new ManualResetEvent(false);
+    var readyToEnd = new ManualResetEvent(false);
+
+    var producer = new Thread(() =>
+    {
+        readyToStart.WaitOne();
+        for (int i = 0; i < itemCount; i++)
+        {
+            collection.Add(i);
+        }
+        collection.CompleteAdding();
+        readyToEnd.Set();
+    });
+
+    var consumer = new Thread(() =>
+    {
+        readyToStart.WaitOne();
+        while (!collection.IsCompleted)
+        {
+            collection.TryTake(out _);
+        }
+        readyToEnd.Set();
+    });
+
+    producer.Start();
+    consumer.Start();
+
+    var stopwatch = Stopwatch.StartNew();
+    readyToStart.Set();
+    readyToEnd.WaitOne();
+    stopwatch.Stop();
+
+    return stopwatch.Elapsed.TotalMilliseconds;
+}
+
+static double TestConcurrentQueue(int itemCount)
+{
+    var queue = new ConcurrentQueue<int>();
+    var readyToStart = new ManualResetEvent(false);
+    var readyToEnd = new ManualResetEvent(false);
+
+    var producer = new Thread(() =>
+    {
+        readyToStart.WaitOne();
+        for (int i = 0; i < itemCount; i++)
+        {
+            queue.Enqueue(i);
+        }
+        readyToEnd.Set();
+    });
+
+    var consumer = new Thread(() =>
+    {
+        readyToStart.WaitOne();
+        for (int i = 0; i < itemCount; i++)
+        {
+            while (!queue.TryDequeue(out _)) ;
+        }
+        readyToEnd.Set();
+    });
+
+    producer.Start();
+    consumer.Start();
+
+    var stopwatch = Stopwatch.StartNew();
+    readyToStart.Set();
+    readyToEnd.WaitOne();
+    stopwatch.Stop();
+
+    return stopwatch.Elapsed.TotalMilliseconds;
+}
+
+static double TestUnsafeQueue(int itemCount)
+{
+    var queue = new Queue<int>();
+    var stopwatch = Stopwatch.StartNew();
+
+    for (int i = 0; i < itemCount; i++)
+    {
+        queue.Enqueue(i);
+    }
+
+    for (int i = 0; i < itemCount; i++)
+    {
+        queue.Dequeue();
+    }
+
+    stopwatch.Stop();
+    return stopwatch.Elapsed.TotalMilliseconds;
+}
+
+#!markdown
+
+#!csharp
+
+const int itemCount = 1000000;
+const int iterations = 10;
+
+var blockingCollectionTimes = new List<double>();
+var concurrentQueueTimes = new List<double>();
+var unsafeQueue = new List<double>();
+
+for (int i = 0; i < iterations; i++)
+{
+    blockingCollectionTimes.Add(TestBlockingCollection(itemCount));
+    concurrentQueueTimes.Add(TestConcurrentQueue(itemCount));
+    unsafeQueue.Add(TestUnsafeQueue(itemCount));
+}
+
+var plt = new ScottPlot.Plot();
+plt.Add.Scatter(
+    Enumerable.Range(1, iterations).Select(x => (double)x).ToArray(), 
+    blockingCollectionTimes.ToArray()
+);
+plt.Add.Scatter(
+    Enumerable.Range(1, iterations).Select(x => (double)x).ToArray(), 
+    concurrentQueueTimes.ToArray()
+);
+plt.Add.Scatter(
+    Enumerable.Range(1, iterations).Select(x => (double)x).ToArray(), 
+    unsafeQueue.ToArray()
+);
+plt.Title("Сравнение производительности очередей");
+plt.XLabel("Итерации");
+plt.YLabel("Время (ms)");
+
+var avgBlockingCollection = blockingCollectionTimes.Average();
+var avgConcurrentQueue = concurrentQueueTimes.Average();
+var avgUnsafeQueue = unsafeQueue.Average();
+
+Console.WriteLine($"Среднее время BlockingCollection: {avgBlockingCollection} ms");
+Console.WriteLine($"Среднее время ConcurrentQueue: {avgConcurrentQueue} ms");
+Console.WriteLine($"Среднее время непотокобезопасной очереди: {avgUnsafeQueue} ms");
+
+plt
+
+#!markdown
+
 ## Вывод
+
+Самая быстрая потокобезопасная коллекциия - `ConcurrentQueue`
+
+Среднее время `BlockingCollection`: 433.11 ms \
+Среднее время `ConcurrentQueue`: 18.95 ms \
+Среднее время непотокобезопасной очереди: 18.72 ms
+
+Выходит, что непотокобезопасная очередь в среднем быстрее самой быстрой потокобезопасной очереди
