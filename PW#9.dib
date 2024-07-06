@@ -20,7 +20,7 @@
 
 #!csharp
 
-interface ICommand
+public interface ICommand
 {
     void Execute();
 }
@@ -39,3 +39,185 @@ public class TestCommand(int id) : ICommand
 #!markdown
 
 Необходимо проиллюстрировать выполнение 5 экземпляров TestCommand 3 раза, затем остановить поток с помощью HardStop.
+
+#!csharp
+
+using System.Collections.Concurrent;
+using System.Threading;
+
+public interface IScheduler
+{
+    bool HasTask();
+    ICommand Dequeue();
+    void Enqueue(ICommand task);
+}
+
+public class Scheduler : IScheduler
+{
+    private BlockingCollection<ICommand> _queue = new BlockingCollection<ICommand>();
+
+    public bool HasTask() => _queue.Count > 0;
+
+    public ICommand Dequeue() => _queue.Take();
+
+    public void Enqueue(ICommand task) => _queue.Add(task);
+}
+
+public class ThreadManager
+{
+    private BlockingCollection<ICommand> _serverThreadQueue = new BlockingCollection<ICommand>();
+    private bool _needStop;
+    public Scheduler scheduler;
+    public Thread Thread { get; private set; }
+
+    public ThreadManager()
+    {
+        scheduler = new Scheduler();
+        Thread = new Thread(RunServer);
+        Thread.Start();
+    }
+
+    public void RunServer()
+    {
+        while (true)
+        {
+            if (_needStop && _serverThreadQueue.Count == 0 && !scheduler.HasTask())
+                break;
+
+            ICommand task;
+            if (scheduler.HasTask())
+                task = scheduler.Dequeue();
+            else if (!_serverThreadQueue.TryTake(out task))
+            {
+                Thread.Sleep(100);
+                continue;
+            }
+
+            try
+            {
+                task.Execute();
+            }
+            catch (ThreadInterruptedException)
+            {
+                break;
+            }
+            catch (Exception ex)
+            {
+                ExceptionHandler.Handle(ex);
+                break;
+            }
+        }
+    }
+
+    public void AddTask(ICommand task) => _serverThreadQueue.Add(task);
+
+    public void StopWithEmpty() => _needStop = true;
+}
+
+public class HardStop : ICommand
+{
+    private ThreadManager _threadManager;
+
+    public HardStop(ThreadManager threadManager)
+    {
+        _threadManager = threadManager;
+    }
+
+    public void Execute()
+    {
+        if (_threadManager.Thread != Thread.CurrentThread)
+            throw new Exception("Error");
+
+        throw new ThreadInterruptedException();
+    }
+}
+
+public class SoftStop : ICommand
+{
+    private ThreadManager _threadManager;
+
+    public SoftStop(ThreadManager threadManager)
+    {
+        _threadManager = threadManager;
+    }
+
+    public void Execute()
+    {
+        if (_threadManager.Thread != Thread.CurrentThread)
+            throw new Exception("Error");
+
+        _threadManager.StopWithEmpty();
+    }
+}
+
+public class RecursiveCommand : ICommand
+{
+    private ThreadManager _threadManager;
+    private ICommand _command;
+    private int _counter;
+
+    public RecursiveCommand(ThreadManager threadManager, ICommand command, int counter)
+    {
+        _threadManager = threadManager;
+        _command = command;
+        _counter = counter;
+    }
+
+    public void Execute()
+    {
+        if (_counter == 0)
+            return;
+
+        _counter--;
+        _command.Execute();
+        _threadManager.scheduler.Enqueue(this);
+    }
+}
+
+public class TestLongCommand : ICommand
+{
+    private ThreadManager _threadManager;
+    private int _counter;
+
+    public TestLongCommand(ThreadManager threadManager, int counter)
+    {
+        _threadManager = threadManager;
+        _counter = counter;
+    }
+
+    public void Execute()
+    {
+        if (_counter == 0)
+            return;
+
+        _counter--;
+        Console.WriteLine($"Doing something: {_counter} more times...");
+        Thread.Sleep(500);
+        Console.WriteLine("Ready.");
+        _threadManager.scheduler.Enqueue(this);
+    }
+}
+
+public class TestCommand : ICommand
+{
+    public int id;
+    public int counter = 0;
+
+    public TestCommand(int id)
+    {
+        id = id;
+    }
+
+    public void Execute()
+    {
+        Console.WriteLine($"Поток {id} вызов {++counter}");
+    }
+}
+
+ThreadManager threadManager = new ThreadManager();
+for (int i = 1; i <= 5; i++)
+{
+    threadManager.AddTask(new RecursiveCommand(threadManager, new TestCommand(i), 3));
+}
+threadManager.AddTask(new HardStop(threadManager));
+threadManager.Thread.Join();
