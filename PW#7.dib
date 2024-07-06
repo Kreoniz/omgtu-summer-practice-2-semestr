@@ -22,6 +22,176 @@ public interface ICommand
     void Execute();
 }
 
+#!csharp
+
+#!csharp
+
+using System;
+using System.Collections.Concurrent;
+using System.Threading;
+
+public class ServerThread
+{
+    BlockingCollection<ICommand> commands = new BlockingCollection<ICommand>();
+    Thread runThread;
+    bool isRunning = true;
+
+    public ServerThread()
+    {
+        isRunning = true;
+        runThread = new Thread(Run);
+        runThread.Start();
+    }
+
+    public void AddCommand(ICommand command)
+    {
+        if (isRunning)
+        {
+            commands.Add(command);
+        }
+    }
+
+    private void Run()
+    {
+        while (isRunning || commands.Count > 0)
+        {
+            ICommand command;
+            try
+            {
+                command = commands.Take();
+            }
+            catch (Exception)
+            {
+                break;
+            }
+
+            try
+            {
+                command.Execute();
+            }
+            catch (Exception err)
+            {
+                Console.WriteLine(err.Message);
+            }
+        }
+
+        while (commands.TryTake(out var remainingCommand))
+        {
+            try
+            {
+                remainingCommand.Execute();
+            }
+            catch (Exception err)
+            {
+                Console.WriteLine(err.Message);
+            }
+        }
+    }
+
+    public void HardStop()
+    {
+        isRunning = false;
+        commands.CompleteAdding();
+        runThread.Interrupt();
+    }
+
+    public void SoftStop()
+    {
+        isRunning = false;
+        commands.CompleteAdding();
+    }
+
+    public Thread RunThread()
+    {
+        return runThread;
+    }
+
+    public void WaitForCompletion()
+    {
+        runThread.Join();
+    }
+}
+
+public class HardStopCommand : ICommand
+{
+    private readonly ServerThread serverThread;
+
+    public HardStopCommand(ServerThread serverThread)
+    {
+        this.serverThread = serverThread;
+    }
+
+    public void Execute()
+    {
+        if (Thread.CurrentThread != serverThread.RunThread())
+        {
+            throw new Exception("Текущий поток не совпадает с потоком ServerThread");
+        }
+        serverThread.HardStop();
+    }
+}
+
+public class SoftStopCommand : ICommand
+{
+    private readonly ServerThread serverThread;
+
+    public SoftStopCommand(ServerThread serverThread)
+    {
+        this.serverThread = serverThread;
+    }
+
+    public void Execute()
+    {
+        if (Thread.CurrentThread != serverThread.RunThread())
+        {
+            throw new Exception("Текущий поток не совпадает с потоком ServerThread");
+        }
+        serverThread.SoftStop();
+    }
+}
+
+#!csharp
+
+public static void HardStopTest()
+{
+    var serverThread = new ServerThread();
+    var hardStopCommand = new HardStopCommand(serverThread);
+
+    serverThread.AddCommand(hardStopCommand);
+    serverThread.WaitForCompletion();
+
+    if (serverThread.RunThread().IsAlive)
+    {
+        throw new InvalidOperationException("Поток не завершился");
+    }
+    else
+    {
+        Console.WriteLine("HardTest выполнился успешно!");
+    }
+}
+
+public static void SoftStopTest()
+{
+    var serverThread = new ServerThread();
+    var softStopCommand = new SoftStopCommand(serverThread);
+
+    serverThread.AddCommand(softStopCommand);
+    serverThread.WaitForCompletion();
+
+    if (serverThread.RunThread().IsAlive)
+    {
+        throw new InvalidOperationException("Поток не завершился");
+    }
+    else
+    {
+        Console.WriteLine("SoftTest выполнился успешно!");
+    }
+
+}
+
+HardStopTest();
+SoftStopTest();
+
 #!markdown
 
 Классы, наследующие интерйес ICommand будем называть **Командами.**
