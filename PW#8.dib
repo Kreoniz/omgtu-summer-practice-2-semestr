@@ -35,9 +35,16 @@
 
 #!csharp
 
+public interface ICommand
+{
+    void Execute();
+}
+
+#!csharp
+
 public interface IScheduler
 {
-    bool HasCommand()
+    bool HasCommand();
     ICommand Select();
     void Add(ICommand cmd);
 }
@@ -55,3 +62,86 @@ public interface IScheduler
 Необходимо учесть этот момент при реализации очереди.
 
 2. Для обепечения справедливости стратегии планировщика в слабом смысле использовать стратегию Round Robbin (циклическую) для определения следующего потока на исполнение.
+
+#!csharp
+
+using System;
+using System.Collections.Generic;
+using System.Threading;
+
+public class Command : ICommand
+{
+    private string name;
+
+    public Command(string str)
+    {
+        name = str;
+    }
+
+    public void Execute()
+    {
+        Console.WriteLine($"Выполняется команда: {name}");
+        Thread.Sleep(1000);
+    }
+}
+
+public class Scheduler : IScheduler
+{
+    private List<ICommand> commands = new List<ICommand>();
+    private int currentIndex = 0;
+
+    public bool HasCommand()
+    {
+        return commands.Count > 0;
+    }
+
+    public ICommand Select()
+    {
+        if (commands.Count == 0)
+        {
+            return null;
+        }
+
+        ICommand selectedCommand = commands[currentIndex];
+        currentIndex = (currentIndex + 1) % commands.Count; 
+        return selectedCommand;
+    }
+
+    public void Add(ICommand cmd)
+    {
+        commands.Add(cmd);
+    }
+}
+
+#!csharp
+
+Scheduler scheduler = new Scheduler();
+
+Thread thread = new Thread(() =>
+{
+    bool running = true;
+
+    while (running)
+    {
+        if (scheduler.HasCommand())
+        {
+            ICommand command = scheduler.Select();
+            command.Execute();
+        }
+        else
+        {
+            Thread.Sleep(1000);
+        }
+    }
+});
+
+thread.Start();
+
+scheduler.Add(new Command("Комманда 1"));
+Thread.Sleep(2000);
+scheduler.Add(new Command("Комманда 2"));
+Thread.Sleep(500);
+scheduler.Add(new Command("Комманда 3"));
+Thread.Sleep(3000);
+scheduler.Add(new Command("Комманда 4"));
+Thread.Sleep(2000);
