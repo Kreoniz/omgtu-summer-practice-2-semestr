@@ -36,3 +36,121 @@
 1. [Паттерн Сообщение](https://www.enterpriseintegrationpatterns.com/patterns/messaging/Message.html)
 2. [Паттерн Роутер - весь раздел про Роутеры](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageRoutingIntro.html)
 3. [Обмен сообщеними](https://www.enterpriseintegrationpatterns.com/patterns/messaging/MessageConstructionIntro.html)
+
+#!csharp
+
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
+
+public class Message
+{
+    public string CommandId { get; }
+    public string Content { get; }
+
+    public Message(string commandId, string content)
+    {
+        CommandId = commandId;
+        Content = content;
+    }
+}
+
+public abstract class Command
+{
+    public string Id { get; }
+    public Queue<Message> MessageQueue { get; }
+
+    public Command(string id)
+    {
+        Id = id;
+        MessageQueue = new Queue<Message>();
+    }
+
+    public abstract void Execute();
+}
+
+public class LongRunningCommand : Command
+{
+    public LongRunningCommand(string id) : base(id) { }
+
+    public override void Execute()
+    {
+        while (true)
+        {
+            if (MessageQueue.Count > 0)
+            {
+                var message = MessageQueue.Dequeue();
+                Console.WriteLine($"Команда {Id} обработанное сообщение: {message.Content}");
+            }
+            Thread.Sleep(1000);
+        }
+    }
+}
+
+public class Router
+{
+    private ConcurrentQueue<Message> _globalQueue;
+    private Dictionary<string, Queue<Message>> _commandQueues;
+
+    public Router()
+    {
+        _globalQueue = new ConcurrentQueue<Message>();
+        _commandQueues = new Dictionary<string, Queue<Message>>();
+    }
+
+    public void RegisterCommand(Command command)
+    {
+        _commandQueues[command.Id] = command.MessageQueue;
+    }
+
+    public void UnregisterCommand(string commandId)
+    {
+        _commandQueues.Remove(commandId);
+    }
+
+    public void SendMessage(Message message)
+    {
+        _globalQueue.Enqueue(message);
+    }
+
+    public void Execute()
+    {
+        while (true)
+        {
+            if (_globalQueue.TryDequeue(out var message))
+            {
+                if (_commandQueues.TryGetValue(message.CommandId, out var commandQueue))
+                {
+                    commandQueue.Enqueue(message);
+                }
+                else
+                {
+                    Console.WriteLine($"Сообщение команде {message.CommandId} не было доставлено.");
+                }
+            }
+            Thread.Sleep(500);
+        }
+    }
+}
+
+var router = new Router();
+
+var command1 = new LongRunningCommand("cmd1");
+var command2 = new LongRunningCommand("cmd2");
+
+router.RegisterCommand(command1);
+router.RegisterCommand(command2);
+
+Task.Run(() => command1.Execute());
+Task.Run(() => command2.Execute());
+Task.Run(() => router.Execute());
+
+router.SendMessage(new Message("cmd1", "Команда 1"));
+router.SendMessage(new Message("cmd2", "Команда 2"));
+
+router.SendMessage(new Message("cmd_does_not_exist", "Эта команда не существует"));
+
+
+Console.ReadLine();
